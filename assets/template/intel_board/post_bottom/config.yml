@@ -1,0 +1,8 @@
+sub_dir: intel_board
+template_id: post_bottom
+template_name: 帖子底部判定
+template_shape: rectangle
+auto_mask: true
+point_list:
+- 828, 488
+- 853, 512

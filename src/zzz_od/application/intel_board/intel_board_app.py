@@ -1,3 +1,4 @@
+from one_dragon.base.geometry.rectangle import Rect
 from one_dragon.base.operation.application import application_const
 from one_dragon.base.operation.operation_edge import node_from
 from one_dragon.base.operation.operation_node import operation_node
@@ -6,7 +7,7 @@ from one_dragon.base.operation.operation_round_result import (
     OperationRoundResult,
     OperationRoundResultEnum,
 )
-from one_dragon.utils import cv2_utils
+from one_dragon.utils import cv2_utils, str_utils
 from zzz_od.application.intel_board import intel_board_const
 from zzz_od.application.intel_board.intel_board_config import IntelBoardConfig
 from zzz_od.application.intel_board.intel_board_run_record import IntelBoardRunRecord
@@ -67,6 +68,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='接取委托', success=False)
     @operation_node(name='刷新委托')
     def refresh_commission(self) -> OperationRoundResult:
+        # 3. 刷新委托
         self.scroll_times = 0
         if self.has_filtered:
             return self.round_by_find_and_click_area(
@@ -79,6 +81,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='刷新委托', status='未筛选')
     @operation_node(name='打开筛选', node_max_retry_times=60)
     def open_filter(self) -> OperationRoundResult:
+        # 4. 打开筛选
         result = self.round_by_find_area(self.last_screenshot, '情报板', '点数兑换')
         if result.is_success:
             return self.round_by_click_area(
@@ -91,12 +94,14 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='打开筛选')
     @operation_node(name='重置筛选')
     def reset_filter(self) -> OperationRoundResult:
+        # 5. 重置筛选
         area = self.ctx.screen_loader.get_area('情报板', '重置按钮')
         return self.round_by_ocr_and_click(self.last_screenshot, '重置', area, success_wait=0.5, retry_wait=0.5)
 
     @node_from(from_name='重置筛选')
     @operation_node(name='选择恶名狩猎')
     def select_notorious_hunt(self) -> OperationRoundResult:
+        # 6. 选择恶名狩猎
         search_area = self.ctx.screen_loader.get_area('情报板', '搜索区域')
         return self.round_by_ocr_and_click(self.last_screenshot, '恶名狩猎', area=search_area,
                                            success_wait=0.5, retry_wait=0.5)
@@ -104,6 +109,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='选择恶名狩猎')
     @operation_node(name='选择专业挑战室')
     def select_expert_challenge(self) -> OperationRoundResult:
+        # 7. 选择专业挑战室
         search_area = self.ctx.screen_loader.get_area('情报板', '搜索区域')
         return self.round_by_ocr_and_click(self.last_screenshot, '专业挑战室', area=search_area,
                                            success_wait=0.5, retry_wait=0.5)
@@ -111,6 +117,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='选择专业挑战室')
     @operation_node(name='关闭筛选')
     def close_filter(self) -> OperationRoundResult:
+        # 8. 关闭筛选
         self.has_filtered = True
         return self.round_by_click_area('情报板', '关闭筛选', success_wait=1)
 
@@ -119,28 +126,84 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='寻找委托', status='翻页')
     @operation_node(name='寻找委托')
     def find_commission(self) -> OperationRoundResult:
-        # 4. Ocr 专业挑战室/恶名狩猎，找不到就往下翻到找到为止
-        result = self.round_by_ocr_and_click_by_priority(
-            target_cn_list=['专业挑战室', '恶名狩猎'],
-            success_wait=0.5,
-        )
-        if result.is_success:
-            commission_map = {'专业挑战室': 'expert_challenge', '恶名狩猎': 'notorious_hunt'}
-            self.current_commission_type = commission_map.get(result.status)
-            return result
+        def scale(v):
+            """统一管理随分辨率变化的固定变量"""
+            return int(v * self.ctx.project_config.screen_standard_width / 1920)
 
-        # 翻页
-        if self.scroll_times >= 5:
-            return self.round_success(status='无委托')
+        # 帖子区域预估参数
+        pre_post_width = scale(310)
+        pre_post_height = scale(550)
+        offset_x = scale(25)
+        bottom_cut = scale(150)
 
-        self.scroll_times += 1
-        self.scroll_area('情报板', '搜索区域')
-        return self.round_wait(status='翻页', wait=1)
+        commission_map: dict[str, str] = {'专业挑战室': 'expert_challenge', '恶名狩猎': 'notorious_hunt'}
+        targets = list(commission_map.keys())
 
+        # 9.1 识别帖子头，匹配底部，排除"我的帖子"
+        ocr_map = self.ctx.ocr_service.get_ocr_result_map(image=self.last_screenshot)
+        posts, my_posts = [], []
+
+        for text, mrl in ocr_map.items():
+            for mr in mrl:
+                if (idx := str_utils.find_best_match_by_difflib(text, targets)) is not None:
+                    posts.append((targets[idx], mr))
+                elif str_utils.find_best_match_by_difflib(text, ['我的帖子']) is not None:
+                    my_posts.append(mr)
+
+        # 9.2 确定帖子rect，舍去"我的帖子"
+        selected_name = None
+        selected_rect = None
+
+        for name, mr in posts:
+            screen_h, screen_w = self.last_screenshot.shape[:2]
+            search_bottom_rect = Rect(
+                max(0, mr.x - offset_x), max(0, mr.y + bottom_cut),
+                min(screen_w, mr.x - offset_x + pre_post_width), min(screen_h, mr.y + pre_post_height)
+            )
+            if search_bottom_rect.x1 >= search_bottom_rect.x2 or search_bottom_rect.y1 >= search_bottom_rect.y2:
+                continue
+            part = self.last_screenshot[search_bottom_rect.y1:search_bottom_rect.y2, search_bottom_rect.x1:search_bottom_rect.x2]
+
+            bottom = self.ctx.tm.match_template(part, 'intel_board', 'post_bottom', threshold=0.5)
+            if bottom.max is None:
+                continue
+
+            full_rect = Rect(
+                mr.x - offset_x,
+                mr.y,
+                mr.x - offset_x + pre_post_width,
+                search_bottom_rect.y1 + bottom.max.rect.y2
+            )
+
+            is_my_post = any(
+                full_rect.x1 <= m.x <= full_rect.x2 and full_rect.y1 <= m.y <= full_rect.y2
+                for m in my_posts
+            )
+            if is_my_post:
+                continue
+
+            selected_rect = full_rect
+            selected_name = name
+            break
+
+        # 9.3 点击委托或翻页
+        if selected_name is None:
+            if self.scroll_times >= 5:
+                return self.round_success(status='无委托')
+            self.scroll_times += 1
+            self.scroll_area('情报板', '搜索区域')
+            return self.round_wait(status='翻页', wait=1)
+
+        self.current_commission_type = commission_map[selected_name]
+        click_pos = selected_rect.center
+        self.ctx.controller.click(click_pos)
+
+        return self.round_success(status=selected_name, wait=0.5)
+    
     @node_from(from_name='寻找委托')
     @operation_node(name='接取委托')
     def accept_commission(self) -> OperationRoundResult:
-
+        # 10. 接取委托
         return self.round_by_ocr_and_click_with_action(
             target_action_list=[
                 ('接取委托', OperationRoundResultEnum.WAIT),
@@ -154,7 +217,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='接取委托')
     @operation_node(name='下一步')
     def next_step(self) -> OperationRoundResult:
-        # 7. 持续点击下一步直到出现预备编队页面 需要先选编队再出战
+        # 11. 持续点击下一步直到出现预备编队页面 需要先选编队再出战
         result = self.round_by_ocr(self.last_screenshot, '预备编队')
         if result.is_success:
             return self.round_success()
@@ -170,7 +233,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='下一步')
     @operation_node(name='选择预备编队')
     def choose_predefined_team(self) -> OperationRoundResult:
-        # 8. 选择预备编队 无需选择时直接跳过
+        # 12. 选择预备编队 无需选择时直接跳过
         if self.config.predefined_team_idx == -1:
             return self.round_success('无需选择预备编队')
         op = ChoosePredefinedTeam(self.ctx, [self.config.predefined_team_idx])
@@ -179,7 +242,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='选择预备编队')
     @operation_node(name='点击出战')
     def click_deploy(self) -> OperationRoundResult:
-        # 9. 编队选择完成后点击出战进入战斗
+        # 13. 编队选择完成后点击出战进入战斗
         return self.round_by_ocr_and_click(self.last_screenshot, '出战', success_wait=1, retry_wait=1)
 
     @node_from(from_name='点击出战')
@@ -194,7 +257,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='委托代行中弹窗')
     @operation_node(name='加载自动战斗指令')
     def init_auto_battle(self) -> OperationRoundResult:
-        # 10. 加载自动战斗指令 根据编队配置或默认配置
+        # 14. 加载自动战斗指令 根据编队配置或默认配置
         if self.config.predefined_team_idx == -1:
             auto_battle = self.config.auto_battle_config
         else:
@@ -206,7 +269,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='加载自动战斗指令')
     @operation_node(name='等待战斗画面加载', node_max_retry_times=60)
     def wait_battle_screen(self) -> OperationRoundResult:
-        # 11. 等待战斗画面加载完成
+        # 15. 等待战斗画面加载完成
         result = self.round_by_find_area(self.last_screenshot, '战斗画面', '按键-普通攻击')
         if result.is_success:
             return self.round_success()
@@ -220,7 +283,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='等待战斗画面加载')
     @operation_node(name='战斗前移动')
     def pre_battle_move(self) -> OperationRoundResult:
-        # 12. 根据委托类型选择移动方式
+        # 16. 根据委托类型选择移动方式
         if self.current_commission_type == 'notorious_hunt':
             op = NotoriousHuntMove(self.ctx, 3)
             return self.round_by_op_result(op.execute())
@@ -232,7 +295,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='战斗前移动')
     @operation_node(name='开始自动战斗')
     def start_auto_battle(self) -> OperationRoundResult:
-        # 13. 启动自动战斗
+        # 17. 启动自动战斗
         self.ctx.auto_battle_context.start_auto_battle()
         return self.round_success()
 
