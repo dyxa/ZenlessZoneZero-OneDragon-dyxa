@@ -126,7 +126,7 @@ class IntelBoardApp(ZApplication):
     @node_from(from_name='寻找委托', status='翻页')
     @operation_node(name='寻找委托')
     def find_commission(self) -> OperationRoundResult:
-        def scale(v):
+        def scale(v: int) -> int:
             """统一管理随分辨率变化的固定变量"""
             return int(v * self.ctx.project_config.screen_standard_width / 1920)
 
